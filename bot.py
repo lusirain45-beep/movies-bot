@@ -10,12 +10,14 @@ TMDB_KEY = os.environ.get("TMDB_KEY")
 OPENSUB_KEY = os.environ.get("OPENSUB_KEY")
 YOUTUBE_KEY = os.environ.get("YOUTUBE_KEY")
 GEMINI_KEY = os.environ.get("GEMINI_KEY")
+SUBDL_KEY = os.environ.get("SUBDL_KEY")
 
 bot = telebot.TeleBot(TOKEN)
 genai.configure(api_key=GEMINI_KEY)
 model = genai.GenerativeModel("gemini-pro")
 
 search_results = {}
+user_mode = {}  # تتبع وضع المستخدم
 
 def init_db():
     conn = sqlite3.connect("movies.db")
@@ -27,8 +29,12 @@ def init_db():
 
 init_db()
 
+# ═══════════════════════════════════════
+#              START
+# ═══════════════════════════════════════
 @bot.message_handler(commands=['start'])
 def start(message):
+    user_mode[message.chat.id] = "search"
     markup = InlineKeyboardMarkup()
     markup.row(
         InlineKeyboardButton("🔥 الرائجة", callback_data="trending"),
@@ -46,16 +52,31 @@ def start(message):
         "🍿 *Welcome to Movie's Home!*\n\nاكتب اسم فيلم أو اختار من القائمة:",
         reply_markup=markup, parse_mode='Markdown')
 
+# ═══════════════════════════════════════
+#           معالج الرسائل
+# ═══════════════════════════════════════
 @bot.message_handler(func=lambda m: True)
-def search_movie(message):
-    query = message.text
+def handle_message(message):
     chat_id = message.chat.id
+    text = message.text
+    mode = user_mode.get(chat_id, "search")
 
+    if mode == "ai":
+        user_mode[chat_id] = "search"
+        ai_recommend(chat_id, text)
+    else:
+        search_movie(chat_id, text)
+
+def search_movie(chat_id, query):
     try:
         response = model.generate_content(
-            f"Translate this movie name to English, return ONLY the English name nothing else: {query}"
+            f"Is this a movie/show name? If yes, translate to English and return ONLY the English name. If no, return 'NOT_A_MOVIE': {query}"
         )
-        english_query = response.text.strip()
+        result = response.text.strip()
+        if result == "NOT_A_MOVIE":
+            bot.send_message(chat_id, "🎬 اكتب اسم فيلم للبحث عنه!\n\nأو اضغط 🤖 اسأل AI للحصول على توصيات")
+            return
+        english_query = result
     except:
         english_query = query
 
@@ -71,6 +92,53 @@ def search_movie(message):
     search_results[chat_id] = data['results']
     send_movie_results(chat_id, data['results'][:5])
 
+# ═══════════════════════════════════════
+#           AI التوصيات
+# ═══════════════════════════════════════
+def ai_recommend(chat_id, query):
+    bot.send_message(chat_id, "🤖 AI يفكر...")
+    try:
+        response = model.generate_content(
+            f"""المستخدم يريد توصية أفلام: "{query}"
+            أعطني 4 أفلام مناسبة، رد بهذا الشكل فقط بدون أي كلام إضافي:
+            فيلم 1|سنة1
+            فيلم 2|سنة2
+            فيلم 3|سنة3
+            فيلم 4|سنة4"""
+        )
+        lines = response.text.strip().split('\n')
+        movies = []
+        for line in lines:
+            if '|' in line:
+                parts = line.split('|')
+                movies.append({"title": parts[0].strip(), "year": parts[1].strip()})
+
+        if not movies:
+            bot.send_message(chat_id, "❌ ما قدرت أوصي، جرب مرة ثانية!")
+            return
+
+        markup = InlineKeyboardMarkup()
+        text = "🤖 *AI يوصي لك:*\n\n"
+
+        for m in movies:
+            url = f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_KEY}&query={m['title']}"
+            data = requests.get(url).json()
+            if data['results']:
+                movie = data['results'][0]
+                text += f"🎬 {movie['title']} ({m['year']})\n"
+                markup.add(InlineKeyboardButton(
+                    f"🎬 {movie['title']}",
+                    callback_data=f"movie_{movie['id']}"
+                ))
+
+        bot.send_message(chat_id, text, reply_markup=markup, parse_mode='Markdown')
+
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ Error: {str(e)}")
+
+# ═══════════════════════════════════════
+#           نتائج البحث
+# ═══════════════════════════════════════
 def send_movie_results(chat_id, movies):
     markup = InlineKeyboardMarkup()
     for m in movies:
@@ -80,6 +148,9 @@ def send_movie_results(chat_id, movies):
         ))
     bot.send_message(chat_id, "اختار الفيلم:", reply_markup=markup)
 
+# ═══════════════════════════════════════
+#           تفاصيل الفيلم
+# ═══════════════════════════════════════
 def show_movie(chat_id, movie_id):
     url = f"https://api.themoviedb.org/3/movie/{movie_id}?api_key={TMDB_KEY}&append_to_response=credits"
     data = requests.get(url).json()
@@ -94,7 +165,7 @@ def show_movie(chat_id, movie_id):
 
     try:
         ai_summary = model.generate_content(
-            f"Write a fun 2-line Arabic summary for the movie: {title}"
+            f"اكتب ملخص ممتع وجذاب بالعربي بسطرين للفيلم: {title}"
         ).text.strip()
     except:
         ai_summary = overview[:200]
@@ -123,6 +194,9 @@ def show_movie(chat_id, movie_id):
     except:
         bot.send_message(chat_id, caption, reply_markup=markup, parse_mode='Markdown')
 
+# ═══════════════════════════════════════
+#              التورنت
+# ═══════════════════════════════════════
 def get_torrents(chat_id, title, year):
     results = []
 
@@ -176,6 +250,9 @@ def get_torrents(chat_id, title, year):
         )
         bot.send_message(chat_id, text, parse_mode='HTML')
 
+# ═══════════════════════════════════════
+#              الترجمة
+# ═══════════════════════════════════════
 def get_subtitles(chat_id, movie_id, title):
     markup = InlineKeyboardMarkup()
     markup.row(
@@ -190,31 +267,25 @@ def get_subtitles(chat_id, movie_id, title):
 
 def download_subtitle(chat_id, movie_id, title, lang):
     try:
-        headers = {
-            "Api-Key": OPENSUB_KEY,
-            "Content-Type": "application/json",
-            "User-Agent": "MoviesHomeBot v1.0"
-        }
-        url = f"https://api.opensubtitles.com/api/v1/subtitles?tmdb_id={movie_id}&languages={lang}"
-        data = requests.get(url, headers=headers).json()
+        url = f"https://api.subdl.com/api/v1/subtitles?api_key={SUBDL_KEY}&tmdb_id={movie_id}&languages={lang}&subs_per_page=5"
+        data = requests.get(url).json()
 
-        if not data.get('data'):
+        if not data.get('subtitles'):
             bot.send_message(chat_id, "❌ ما فيه ترجمة بهذي اللغة!")
             return
 
-        sub = data['data'][0]
-        file_id = sub['attributes']['files'][0]['file_id']
+        sub = data['subtitles'][0]
+        dl_url = f"https://dl.subdl.com{sub['url']}"
+        sub_content = requests.get(dl_url).content
 
-        dl_url = "https://api.opensubtitles.com/api/v1/download"
-        dl_data = requests.post(dl_url, headers=headers,
-                               json={"file_id": file_id}).json()
-
-        sub_content = requests.get(dl_data['link']).content
         bot.send_document(chat_id, sub_content,
                          visible_file_name=f"{title}_{lang}.srt")
     except Exception as e:
         bot.send_message(chat_id, f"❌ Error: {str(e)}")
 
+# ═══════════════════════════════════════
+#              التريلر
+# ═══════════════════════════════════════
 def get_trailer(chat_id, title):
     try:
         url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&q={title}+trailer&type=video&key={YOUTUBE_KEY}"
@@ -225,6 +296,9 @@ def get_trailer(chat_id, title):
     except:
         bot.send_message(chat_id, "❌ ما لقينا تريلر!")
 
+# ═══════════════════════════════════════
+#           قائمة المشاهدة
+# ═══════════════════════════════════════
 def add_to_watchlist(user_id, movie_id, title):
     conn = sqlite3.connect("movies.db")
     c = conn.cursor()
@@ -240,6 +314,9 @@ def get_watchlist(user_id):
     conn.close()
     return movies
 
+# ═══════════════════════════════════════
+#           الأفلام الرائجة
+# ═══════════════════════════════════════
 def get_trending(chat_id):
     url = f"https://api.themoviedb.org/3/trending/movie/week?api_key={TMDB_KEY}"
     data = requests.get(url).json()
@@ -267,6 +344,9 @@ def get_genres(chat_id):
         markup.row(*row)
     bot.send_message(chat_id, "🎭 اختار النوع:", reply_markup=markup)
 
+# ═══════════════════════════════════════
+#           Callback Handler
+# ═══════════════════════════════════════
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
     chat_id = call.message.chat.id
@@ -283,7 +363,8 @@ def handle_callback(call):
     elif data == "genres":
         get_genres(chat_id)
     elif data == "ask_ai":
-        bot.send_message(chat_id, "🤖 اكتب لي وش تبي تشوف وأوصي لك!")
+        user_mode[chat_id] = "ai"
+        bot.send_message(chat_id, "🤖 اكتب لي وش تبي تشوف وأوصي لك!\n\nمثال: فيلم أكشن ممتع، أو فيلم زي Interstellar")
     elif data == "watchlist":
         movies = get_watchlist(user_id)
         if not movies:
