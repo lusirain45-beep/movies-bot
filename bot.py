@@ -5,9 +5,6 @@ import os
 import google.generativeai as genai
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# ═══════════════════════════════════════
-#              المفاتيح
-# ═══════════════════════════════════════
 TOKEN = os.environ.get("TOKEN")
 TMDB_KEY = os.environ.get("TMDB_KEY")
 OPENSUB_KEY = os.environ.get("OPENSUB_KEY")
@@ -20,9 +17,6 @@ model = genai.GenerativeModel("gemini-pro")
 
 search_results = {}
 
-# ═══════════════════════════════════════
-#           قاعدة البيانات
-# ═══════════════════════════════════════
 def init_db():
     conn = sqlite3.connect("movies.db")
     c = conn.cursor()
@@ -33,9 +27,6 @@ def init_db():
 
 init_db()
 
-# ═══════════════════════════════════════
-#              START
-# ═══════════════════════════════════════
 @bot.message_handler(commands=['start'])
 def start(message):
     markup = InlineKeyboardMarkup()
@@ -55,9 +46,6 @@ def start(message):
         "🍿 *Welcome to Movie's Home!*\n\nاكتب اسم فيلم أو اختار من القائمة:",
         reply_markup=markup, parse_mode='Markdown')
 
-# ═══════════════════════════════════════
-#           البحث عن فيلم
-# ═══════════════════════════════════════
 @bot.message_handler(func=lambda m: True)
 def search_movie(message):
     query = message.text
@@ -92,9 +80,6 @@ def send_movie_results(chat_id, movies):
         ))
     bot.send_message(chat_id, "اختار الفيلم:", reply_markup=markup)
 
-# ═══════════════════════════════════════
-#           تفاصيل الفيلم
-# ═══════════════════════════════════════
 def show_movie(chat_id, movie_id):
     url = f"https://api.themoviedb.org/3/movie/{movie_id}?api_key={TMDB_KEY}&append_to_response=credits"
     data = requests.get(url).json()
@@ -138,9 +123,6 @@ def show_movie(chat_id, movie_id):
     except:
         bot.send_message(chat_id, caption, reply_markup=markup, parse_mode='Markdown')
 
-# ═══════════════════════════════════════
-#              التورنت
-# ═══════════════════════════════════════
 def get_torrents(chat_id, title, year):
     results = []
 
@@ -194,9 +176,6 @@ def get_torrents(chat_id, title, year):
         )
         bot.send_message(chat_id, text, parse_mode='HTML')
 
-# ═══════════════════════════════════════
-#              الترجمة
-# ═══════════════════════════════════════
 def get_subtitles(chat_id, movie_id, title):
     markup = InlineKeyboardMarkup()
     markup.row(
@@ -211,10 +190,10 @@ def get_subtitles(chat_id, movie_id, title):
 
 def download_subtitle(chat_id, movie_id, title, lang):
     try:
-       headers = {
-    "Api-Key": OPENSUB_KEY,
-    "Content-Type": "application/json",
-    "User-Agent": "MoviesHomeBot v1.0"
+        headers = {
+            "Api-Key": OPENSUB_KEY,
+            "Content-Type": "application/json",
+            "User-Agent": "MoviesHomeBot v1.0"
         }
         url = f"https://api.opensubtitles.com/api/v1/subtitles?tmdb_id={movie_id}&languages={lang}"
         data = requests.get(url, headers=headers).json()
@@ -236,9 +215,6 @@ def download_subtitle(chat_id, movie_id, title, lang):
     except Exception as e:
         bot.send_message(chat_id, f"❌ Error: {str(e)}")
 
-# ═══════════════════════════════════════
-#              التريلر
-# ═══════════════════════════════════════
 def get_trailer(chat_id, title):
     try:
         url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&q={title}+trailer&type=video&key={YOUTUBE_KEY}"
@@ -249,9 +225,6 @@ def get_trailer(chat_id, title):
     except:
         bot.send_message(chat_id, "❌ ما لقينا تريلر!")
 
-# ═══════════════════════════════════════
-#           قائمة المشاهدة
-# ═══════════════════════════════════════
 def add_to_watchlist(user_id, movie_id, title):
     conn = sqlite3.connect("movies.db")
     c = conn.cursor()
@@ -267,9 +240,6 @@ def get_watchlist(user_id):
     conn.close()
     return movies
 
-# ═══════════════════════════════════════
-#           الأفلام الرائجة
-# ═══════════════════════════════════════
 def get_trending(chat_id):
     url = f"https://api.themoviedb.org/3/trending/movie/week?api_key={TMDB_KEY}"
     data = requests.get(url).json()
@@ -297,9 +267,6 @@ def get_genres(chat_id):
         markup.row(*row)
     bot.send_message(chat_id, "🎭 اختار النوع:", reply_markup=markup)
 
-# ═══════════════════════════════════════
-#           Callback Handler
-# ═══════════════════════════════════════
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
     chat_id = call.message.chat.id
