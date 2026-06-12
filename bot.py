@@ -214,6 +214,7 @@ def download_subtitle(chat_id, movie_id, title, lang):
         headers = {
             "Api-Key": OPENSUB_KEY,
             "Content-Type": "application/json"
+ "User-Agent": "MoviesHomeBot v1.0"
         }
         url = f"https://api.opensubtitles.com/api/v1/subtitles?tmdb_id={movie_id}&languages={lang}"
         data = requests.get(url, headers=headers).json()
