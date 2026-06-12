@@ -14,7 +14,7 @@ SUBDL_KEY = os.environ.get("SUBDL_KEY")
 
 bot = telebot.TeleBot(TOKEN)
 genai.configure(api_key=GEMINI_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
+model = genai.GenerativeModel("gemini-2.0-flash")
 
 search_results = {}
 user_mode = {}  # تتبع وضع المستخدم
