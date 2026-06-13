@@ -2,23 +2,18 @@ import telebot
 import requests
 import sqlite3
 import os
-import google.generativeai as genai
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from datetime import datetime
 
 TOKEN = os.environ.get("TOKEN")
 TMDB_KEY = os.environ.get("TMDB_KEY")
 YOUTUBE_KEY = os.environ.get("YOUTUBE_KEY")
-GEMINI_KEY = os.environ.get("GEMINI_KEY")
 SUBDL_KEY = os.environ.get("SUBDL_KEY")
 
 ADMINS = [6154627247, 7451435181]
 OWNER = 6154627247
 
 bot = telebot.TeleBot(TOKEN)
-genai.configure(api_key=GEMINI_KEY)
-model = genai.GenerativeModel("gemini-2.0-flash")
-
 user_mode = {}
 
 # ═══════════════════════════════════════
@@ -31,9 +26,6 @@ def init_db():
                  (user_id INTEGER PRIMARY KEY, username TEXT, name TEXT, joined TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS watchlist
                  (user_id INTEGER, item_id INTEGER, title TEXT, media_type TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS ai_usage
-                 (user_id INTEGER, date TEXT, count INTEGER,
-                 PRIMARY KEY (user_id, date))''')
     c.execute('''CREATE TABLE IF NOT EXISTS stats
                  (user_id INTEGER, action TEXT, date TEXT)''')
     conn.commit()
@@ -60,35 +52,18 @@ def log_action(user_id, action):
     conn.commit()
     conn.close()
 
-def check_ai_limit(user_id):
-    today = datetime.now().strftime("%Y-%m-%d")
-    conn = sqlite3.connect("cinema.db")
-    c = conn.cursor()
-    c.execute("SELECT count FROM ai_usage WHERE user_id=? AND date=?", (user_id, today))
-    row = c.fetchone()
-    conn.close()
-    if row is None:
-        return True
-    return row[0] < 10
-
-def increment_ai_usage(user_id):
-    today = datetime.now().strftime("%Y-%m-%d")
-    conn = sqlite3.connect("cinema.db")
-    c = conn.cursor()
-    c.execute("INSERT INTO ai_usage VALUES (?,?,1) ON CONFLICT(user_id,date) DO UPDATE SET count=count+1",
-        (user_id, today))
-    conn.commit()
-    conn.close()
-
-def get_ai_remaining(user_id):
-    today = datetime.now().strftime("%Y-%m-%d")
-    conn = sqlite3.connect("cinema.db")
-    c = conn.cursor()
-    c.execute("SELECT count FROM ai_usage WHERE user_id=? AND date=?", (user_id, today))
-    row = c.fetchone()
-    conn.close()
-    used = row[0] if row else 0
-    return 10 - used
+# ═══════════════════════════════════════
+#           التحقق من الترجمة
+# ═══════════════════════════════════════
+def check_subtitle(tmdb_id, season=None):
+    try:
+        url = f"https://api.subdl.com/api/v1/subtitles?api_key={SUBDL_KEY}&tmdb_id={tmdb_id}&languages=ar&subs_per_page=1"
+        if season:
+            url += f"&season_number={season}"
+        data = requests.get(url, timeout=5).json()
+        return bool(data.get('subtitles'))
+    except:
+        return False
 
 # ═══════════════════════════════════════
 #           الأزرار السفلية
@@ -96,14 +71,14 @@ def get_ai_remaining(user_id):
 def main_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row(KeyboardButton("🎬 أفلام"), KeyboardButton("📺 مسلسلات"), KeyboardButton("🎌 أنمي"))
-    markup.row(KeyboardButton("🔍 بحث"), KeyboardButton("🤖 AI"), KeyboardButton("📋 قائمتي"))
+    markup.row(KeyboardButton("🔍 بحث"), KeyboardButton("📋 قائمتي"))
     return markup
 
 def admin_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row(KeyboardButton("🎬 أفلام"), KeyboardButton("📺 مسلسلات"), KeyboardButton("🎌 أنمي"))
-    markup.row(KeyboardButton("🔍 بحث"), KeyboardButton("🤖 AI"), KeyboardButton("📋 قائمتي"))
-    markup.row(KeyboardButton("📊 إحصائيات"), KeyboardButton("📢 broadcast"))
+    markup.row(KeyboardButton("🔍 بحث"), KeyboardButton("📋 قائمتي"))
+    markup.row(KeyboardButton("📊 إحصائيات"), KeyboardButton("📢 Broadcast"))
     return markup
 
 # ═══════════════════════════════════════
@@ -113,9 +88,7 @@ def admin_keyboard():
 def start(message):
     save_user(message)
     user_mode[message.chat.id] = "search"
-    
     keyboard = admin_keyboard() if message.from_user.id in ADMINS else main_keyboard()
-    
     bot.send_message(message.chat.id,
         "📽️ *Welcome to Cinema!*\n\nاكتب اسم فيلم أو مسلسل أو أنمي:",
         reply_markup=keyboard, parse_mode='Markdown')
@@ -127,49 +100,36 @@ def start(message):
 def stats(message):
     if message.from_user.id not in ADMINS:
         return
-    
     conn = sqlite3.connect("cinema.db")
     c = conn.cursor()
-    
     c.execute("SELECT COUNT(*) FROM users")
     total_users = c.fetchone()[0]
-    
     today = datetime.now().strftime("%Y-%m-%d")
     c.execute("SELECT COUNT(DISTINCT user_id) FROM stats WHERE date LIKE ?", (f"{today}%",))
     active_today = c.fetchone()[0]
-    
     c.execute("SELECT COUNT(*) FROM stats WHERE action='search'")
     total_searches = c.fetchone()[0]
-    
     c.execute("SELECT COUNT(*) FROM stats WHERE action='torrent'")
     total_torrents = c.fetchone()[0]
-    
-    c.execute("SELECT COUNT(*) FROM stats WHERE action='ai'")
-    total_ai = c.fetchone()[0]
-    
     c.execute("SELECT name, username FROM users ORDER BY joined DESC LIMIT 5")
     last_users = c.fetchall()
-    
     conn.close()
-    
     text = (
         f"📊 *إحصائيات Cinema*\n\n"
         f"👥 إجمالي المستخدمين: `{total_users}`\n"
         f"🟢 نشطين اليوم: `{active_today}`\n"
         f"🔍 إجمالي البحث: `{total_searches}`\n"
-        f"⬇️ إجمالي التورنت: `{total_torrents}`\n"
-        f"🤖 إجمالي AI: `{total_ai}`\n\n"
+        f"⬇️ إجمالي التورنت: `{total_torrents}`\n\n"
         f"*آخر 5 مستخدمين:*\n"
     )
     for u in last_users:
         text += f"• {u[0]} {'@'+u[1] if u[1] else ''}\n"
-    
     bot.send_message(message.chat.id, text, parse_mode='Markdown')
 
 # ═══════════════════════════════════════
 #           Broadcast
 # ═══════════════════════════════════════
-@bot.message_handler(func=lambda m: m.text == "📢 broadcast")
+@bot.message_handler(func=lambda m: m.text == "📢 Broadcast")
 def broadcast_start(message):
     if message.from_user.id != OWNER:
         return
@@ -182,7 +142,6 @@ def do_broadcast(message, text):
     c.execute("SELECT user_id FROM users")
     users = c.fetchall()
     conn.close()
-    
     success = 0
     fail = 0
     for user in users:
@@ -191,7 +150,6 @@ def do_broadcast(message, text):
             success += 1
         except:
             fail += 1
-    
     bot.send_message(message.chat.id, f"✅ تم الإرسال!\n\n📨 نجح: {success}\n❌ فشل: {fail}")
 
 # ═══════════════════════════════════════
@@ -207,24 +165,12 @@ def handle_message(message):
     if mode == "broadcast" and message.from_user.id == OWNER:
         user_mode[chat_id] = "search"
         do_broadcast(message, text)
-    elif mode == "ai":
-        user_mode[chat_id] = "search"
-        if not check_ai_limit(message.from_user.id):
-            bot.send_message(chat_id, "❌ وصلت الحد اليومي للـ AI (10 استخدامات)\nيتجدد بكره ✅")
-            return
-        increment_ai_usage(message.from_user.id)
-        log_action(message.from_user.id, "ai")
-        ai_recommend(chat_id, text)
     elif text == "🎬 أفلام":
         movies_menu(chat_id)
     elif text == "📺 مسلسلات":
         tv_menu(chat_id)
     elif text == "🎌 أنمي":
         anime_menu(chat_id)
-    elif text == "🤖 AI":
-        remaining = get_ai_remaining(message.from_user.id)
-        user_mode[chat_id] = "ai"
-        bot.send_message(chat_id, f"🤖 اكتب لي وش تبي تشوف وأوصي لك!\n\n⚡ متبقي: {remaining}/10 استخدامات اليوم")
     elif text == "📋 قائمتي":
         show_watchlist(chat_id, message.from_user.id)
     elif text == "🔍 بحث":
@@ -278,18 +224,8 @@ def anime_menu(chat_id):
 # ═══════════════════════════════════════
 def search_all(chat_id, query):
     bot.send_message(chat_id, f"🔍 Searching: {query}...")
-
     movies = search_tmdb(query, "movie")
     tvs = search_tmdb(query, "tv")
-
-    if not movies and not tvs:
-        try:
-            response = model.generate_content(f"Translate to English, return ONLY the name: {query}")
-            english = response.text.strip()
-            movies = search_tmdb(english, "movie")
-            tvs = search_tmdb(english, "tv")
-        except:
-            pass
 
     if not movies and not tvs:
         bot.send_message(chat_id, "❌ No results found!")
@@ -318,45 +254,11 @@ def search_tmdb(query, media_type):
         return []
 
 # ═══════════════════════════════════════
-#           AI
-# ═══════════════════════════════════════
-def ai_recommend(chat_id, query):
-    bot.send_message(chat_id, "🤖 AI يفكر...")
-    try:
-        response = model.generate_content(
-            f"""وصي بـ 4 أفلام أو مسلسلات أو أنمي بناءً على: "{query}"
-            رد بهذا الشكل فقط:
-            اسم|سنة|movie
-            اسم|سنة|tv"""
-        )
-        lines = response.text.strip().split('\n')
-        markup = InlineKeyboardMarkup()
-        text = "🤖 *AI يوصي لك:*\n\n"
-        for line in lines:
-            if '|' in line:
-                parts = line.split('|')
-                if len(parts) >= 3:
-                    title = parts[0].strip()
-                    year = parts[1].strip()
-                    mtype = parts[2].strip()
-                    results = search_tmdb(title, mtype)
-                    if results:
-                        item = results[0]
-                        icon = "🎬" if mtype == "movie" else "📺"
-                        name = item.get('title') or item.get('name', title)
-                        text += f"{icon} {name} ({year})\n"
-                        markup.add(InlineKeyboardButton(
-                            f"{icon} {name}",
-                            callback_data=f"{mtype}_{item['id']}"
-                        ))
-        bot.send_message(chat_id, text, reply_markup=markup, parse_mode='Markdown')
-    except Exception as e:
-        bot.send_message(chat_id, f"❌ Error: {str(e)}")
-
-# ═══════════════════════════════════════
 #           تفاصيل الفيلم
 # ═══════════════════════════════════════
 def show_movie(chat_id, movie_id):
+    msg = bot.send_message(chat_id, "🔍 جاري التحقق من الترجمة...")
+
     url = f"https://api.themoviedb.org/3/movie/{movie_id}?api_key={TMDB_KEY}&append_to_response=credits"
     data = requests.get(url).json()
 
@@ -368,17 +270,16 @@ def show_movie(chat_id, movie_id):
     genres = ", ".join([g['name'] for g in data.get('genres', [])])
     director = next((c['name'] for c in data.get('credits', {}).get('crew', []) if c['job'] == 'Director'), 'Unknown')
 
-    try:
-        ai_summary = model.generate_content(f"ملخص ممتع بالعربي بسطرين للفيلم: {title}").text.strip()
-    except:
-        ai_summary = overview[:200]
+    has_sub = check_subtitle(movie_id)
+    sub_status = "✅ يوجد ترجمة عربية" if has_sub else "⚠️ لا توجد ترجمة منفصلة - سيتم البحث عن نسخة مدمجة"
 
     caption = (
         f"🎬 *{title}* ({year})\n"
         f"⭐ {round(rating, 1)}/10\n"
         f"🎭 {genres}\n"
-        f"🎬 المخرج: {director}\n\n"
-        f"📖 {ai_summary}"
+        f"🎬 المخرج: {director}\n"
+        f"🗣 {sub_status}\n\n"
+        f"📖 {overview[:200]}"
     )
 
     markup = InlineKeyboardMarkup()
@@ -391,6 +292,7 @@ def show_movie(chat_id, movie_id):
         InlineKeyboardButton("➕ قائمتي", callback_data=f"addwatch_{movie_id}_{title}_movie")
     )
 
+    bot.delete_message(chat_id, msg.message_id)
     try:
         bot.send_photo(chat_id, poster, caption=caption, reply_markup=markup, parse_mode='Markdown')
     except:
@@ -400,6 +302,8 @@ def show_movie(chat_id, movie_id):
 #           تفاصيل المسلسل/الأنمي
 # ═══════════════════════════════════════
 def show_tv(chat_id, tv_id):
+    msg = bot.send_message(chat_id, "🔍 جاري التحقق من الترجمة...")
+
     url = f"https://api.themoviedb.org/3/tv/{tv_id}?api_key={TMDB_KEY}"
     data = requests.get(url).json()
 
@@ -409,25 +313,23 @@ def show_tv(chat_id, tv_id):
     overview = data.get('overview', '')
     poster = f"https://image.tmdb.org/t/p/w500{data.get('poster_path', '')}"
     genres = ", ".join([g['name'] for g in data.get('genres', [])])
-    seasons = data.get('number_of_seasons', '?')
+    seasons = data.get('number_of_seasons', 1)
     episodes = data.get('number_of_episodes', '?')
     status = data.get('status', '')
-
     is_anime = any(g['id'] == 16 for g in data.get('genres', []))
     icon = "🎌" if is_anime else "📺"
 
-    try:
-        ai_summary = model.generate_content(f"ملخص ممتع بالعربي بسطرين للمسلسل: {name}").text.strip()
-    except:
-        ai_summary = overview[:200]
+    has_sub = check_subtitle(tv_id, season=1)
+    sub_status = "✅ يوجد ترجمة عربية" if has_sub else "⚠️ لا توجد ترجمة منفصلة - سيتم البحث عن نسخة مدمجة"
 
     caption = (
         f"{icon} *{name}* ({year})\n"
         f"⭐ {round(rating, 1)}/10\n"
         f"🎭 {genres}\n"
         f"📊 {seasons} مواسم | {episodes} حلقة\n"
-        f"📡 {status}\n\n"
-        f"📖 {ai_summary}"
+        f"📡 {status}\n"
+        f"🗣 {sub_status}\n\n"
+        f"📖 {overview[:200]}"
     )
 
     markup = InlineKeyboardMarkup()
@@ -440,6 +342,7 @@ def show_tv(chat_id, tv_id):
         InlineKeyboardButton("➕ قائمتي", callback_data=f"addwatch_{tv_id}_{name}_tv")
     )
 
+    bot.delete_message(chat_id, msg.message_id)
     try:
         bot.send_photo(chat_id, poster, caption=caption, reply_markup=markup, parse_mode='Markdown')
     except:
@@ -516,7 +419,7 @@ def get_movie_torrents(chat_id, title, quality):
 def torrent_tv_type(chat_id, tv_id, title, seasons):
     markup = InlineKeyboardMarkup()
     markup.row(
-        InlineKeyboardButton("📦 Batch (كامل)", callback_data=f"tvbatch_{tv_id}_{title}_{seasons}"),
+        InlineKeyboardButton("📦 Batch كامل", callback_data=f"tvbatch_{tv_id}_{title}_{seasons}"),
         InlineKeyboardButton("🎬 منفصل", callback_data=f"tvsingle_{tv_id}_{title}_{seasons}")
     )
     bot.send_message(chat_id, "📺 اختار نوع التحميل:", reply_markup=markup)
@@ -534,15 +437,13 @@ def torrent_tv_seasons(chat_id, tv_id, title, seasons, mode):
     bot.send_message(chat_id, "📺 اختار الموسم:", reply_markup=markup)
 
 def torrent_tv_episodes(chat_id, title, season):
-    url = f"https://api.themoviedb.org/3/search/tv?api_key={TMDB_KEY}&query={title}"
-    data = requests.get(url).json()
-    if not data['results']:
+    results = search_tmdb(title, "tv")
+    if not results:
         return
-    tv_id = data['results'][0]['id']
+    tv_id = results[0]['id']
     url = f"https://api.themoviedb.org/3/tv/{tv_id}/season/{season}?api_key={TMDB_KEY}"
     data = requests.get(url).json()
     episodes = data.get('episodes', [])
-
     markup = InlineKeyboardMarkup()
     row = []
     for ep in episodes:
@@ -553,8 +454,6 @@ def torrent_tv_episodes(chat_id, title, season):
             row = []
     if row:
         markup.row(*row)
-
-    markup.row(InlineKeyboardButton("🎯 اختار الجودة أولاً", callback_data=f"tvepq_{title}_{season}"))
     bot.send_message(chat_id, f"📺 اختار الحلقة - الموسم {season}:", reply_markup=markup)
 
 def get_tv_torrent(chat_id, title, season, episode, quality="1080p"):
@@ -628,7 +527,25 @@ def download_subtitle(chat_id, item_id, title, lang, season=None, episode=None):
         data = requests.get(url).json()
 
         if not data.get('subtitles'):
-            bot.send_message(chat_id, "❌ ما فيه ترجمة بهذي اللغة!")
+            # ما في ترجمة منفصلة - نبحث عن تورنت مدمج
+            bot.send_message(chat_id, "⚠️ ما في ترجمة منفصلة، جاري البحث عن نسخة مترجمة...")
+            query = f"{title} Arabic" if not season else f"{title} S{int(season):02d}E{int(episode):02d} Arabic"
+            url2 = f"https://apibay.org/q.php?q={query}&cat=200"
+            data2 = requests.get(url2, timeout=10).json()
+            if data2 and data2[0]['name'] != 'No results returned':
+                for t in data2[:2]:
+                    size_gb = round(int(t['size']) / 1073741824, 2)
+                    magnet = f"magnet:?xt=urn:btih:{t['info_hash']}&dn={t['name']}"
+                    text = (
+                        f"🎬 نسخة مترجمة:\n"
+                        f"📦 {t['name']}\n"
+                        f"💾 {size_gb} GB\n"
+                        f"🌱 Seeds: {t['seeders']}\n\n"
+                        f"🔗 <code>{magnet}</code>"
+                    )
+                    bot.send_message(chat_id, text, parse_mode='HTML')
+            else:
+                bot.send_message(chat_id, "❌ ما لقينا ترجمة أو نسخة مترجمة!")
             return
 
         sub = data['subtitles'][0]
@@ -659,11 +576,9 @@ def show_watchlist(chat_id, user_id):
     c.execute("SELECT item_id, title, media_type FROM watchlist WHERE user_id=?", (user_id,))
     items = c.fetchall()
     conn.close()
-
     if not items:
         bot.send_message(chat_id, "📋 قائمتك فاضية!")
         return
-
     markup = InlineKeyboardMarkup()
     for item in items:
         icon = "🎬" if item[2] == "movie" else "📺"
@@ -671,7 +586,7 @@ def show_watchlist(chat_id, user_id):
     bot.send_message(chat_id, "📋 *قائمة مشاهدتك:*", reply_markup=markup, parse_mode='Markdown')
 
 # ═══════════════════════════════════════
-#           الأفلام والمسلسلات
+#           النتائج
 # ═══════════════════════════════════════
 def show_results(chat_id, items, media):
     markup = InlineKeyboardMarkup()
@@ -739,9 +654,8 @@ def handle_callback(call):
 
     elif data == "genres_movie":
         url = f"https://api.themoviedb.org/3/genre/movie/list?api_key={TMDB_KEY}"
-        data2 = requests.get(url).json()
+        genres = requests.get(url).json()['genres']
         markup = InlineKeyboardMarkup()
-        genres = data2['genres']
         for i in range(0, len(genres[:12]), 2):
             row = [InlineKeyboardButton(genres[i]['name'], callback_data=f"genre_{genres[i]['id']}_movie")]
             if i+1 < len(genres[:12]):
@@ -749,16 +663,14 @@ def handle_callback(call):
             markup.row(*row)
         bot.send_message(chat_id, "🎭 اختار النوع:", reply_markup=markup)
 
-    elif data == "genres_tv" or data == "genres_anime":
+    elif data in ["genres_tv", "genres_anime"]:
         url = f"https://api.themoviedb.org/3/genre/tv/list?api_key={TMDB_KEY}"
-        data2 = requests.get(url).json()
+        genres = requests.get(url).json()['genres']
         markup = InlineKeyboardMarkup()
-        genres = data2['genres']
-        mtype = "tv"
         for i in range(0, len(genres[:12]), 2):
-            row = [InlineKeyboardButton(genres[i]['name'], callback_data=f"genre_{genres[i]['id']}_{mtype}")]
+            row = [InlineKeyboardButton(genres[i]['name'], callback_data=f"genre_{genres[i]['id']}_tv")]
             if i+1 < len(genres[:12]):
-                row.append(InlineKeyboardButton(genres[i+1]['name'], callback_data=f"genre_{genres[i+1]['id']}_{mtype}"))
+                row.append(InlineKeyboardButton(genres[i+1]['name'], callback_data=f"genre_{genres[i+1]['id']}_tv"))
             markup.row(*row)
         bot.send_message(chat_id, "🎭 اختار النوع:", reply_markup=markup)
 
