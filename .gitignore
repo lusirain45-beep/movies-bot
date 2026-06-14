@@ -1,0 +1,5 @@
+.npm
+.npm/
+node_modules/
+.ssh/
+SmartPlay/
